@@ -1,0 +1,149 @@
+pipeline {
+    agent any
+    
+    environment {
+        DOCKERHUB_CREDENTIALS = credentials('dockerhub-credentials')
+        DOCKERHUB_USERNAME = 'kastrov'
+        GIT_REPO_URL = 'https://github.com/kastrov/ecommerce-microservices.git'  // Update this
+        ARGOCD_SERVER = 'argocd-server.argocd.svc.cluster.local'
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+        
+        stage('Build & Push Images') {
+            parallel {
+                stage('User Service') {
+                    steps {
+                        dir('services/user-service') {
+                            script {
+                                def img = docker.build("${DOCKERHUB_USERNAME}/user-service:${BUILD_NUMBER}")
+                                docker.withRegistry('https://registry.hub.docker.com', 'dockerhub-credentials') {
+                                    img.push()
+                                    img.push('latest')
+                                }
+                            }
+                        }
+                    }
+                }
+                stage('Product Service') {
+                    steps {
+                        dir('services/product-service') {
+                            script {
+                                def img = docker.build("${DOCKERHUB_USERNAME}/product-service:${BUILD_NUMBER}")
+                                docker.withRegistry('https://registry.hub.docker.com', 'dockerhub-credentials') {
+                                    img.push()
+                                    img.push('latest')
+                                }
+                            }
+                        }
+                    }
+                }
+                stage('Cart Service') {
+                    steps {
+                        dir('services/cart-service') {
+                            script {
+                                def img = docker.build("${DOCKERHUB_USERNAME}/cart-service:${BUILD_NUMBER}")
+                                docker.withRegistry('https://registry.hub.docker.com', 'dockerhub-credentials') {
+                                    img.push()
+                                    img.push('latest')
+                                }
+                            }
+                        }
+                    }
+                }
+                stage('Order Service') {
+                    steps {
+                        dir('services/order-service') {
+                            script {
+                                def img = docker.build("${DOCKERHUB_USERNAME}/order-service:${BUILD_NUMBER}")
+                                docker.withRegistry('https://registry.hub.docker.com', 'dockerhub-credentials') {
+                                    img.push()
+                                    img.push('latest')
+                                }
+                            }
+                        }
+                    }
+                }
+                stage('Payment Service') {
+                    steps {
+                        dir('services/payment-service') {
+                            script {
+                                def img = docker.build("${DOCKERHUB_USERNAME}/payment-service:${BUILD_NUMBER}")
+                                docker.withRegistry('https://registry.hub.docker.com', 'dockerhub-credentials') {
+                                    img.push()
+                                    img.push('latest')
+                                }
+                            }
+                        }
+                    }
+                }
+                stage('Frontend') {
+                    steps {
+                        dir('frontend') {
+                            script {
+                                def img = docker.build("${DOCKERHUB_USERNAME}/ecommerce-frontend:${BUILD_NUMBER}")
+                                docker.withRegistry('https://registry.hub.docker.com', 'dockerhub-credentials') {
+                                    img.push()
+                                    img.push('latest')
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Update Kubernetes Manifests') {
+            steps {
+                script {
+                    // Update image tags in manifests for ArgoCD to pick up
+                    sh """
+                        sed -i 's|kastrov/user-service:.*|kastrov/user-service:${BUILD_NUMBER}|g' kubernetes/services/user-service.yaml
+                        sed -i 's|kastrov/product-service:.*|kastrov/product-service:${BUILD_NUMBER}|g' kubernetes/services/product-service.yaml
+                        sed -i 's|kastrov/cart-service:.*|kastrov/cart-service:${BUILD_NUMBER}|g' kubernetes/services/cart-service.yaml
+                        sed -i 's|kastrov/order-service:.*|kastrov/order-service:${BUILD_NUMBER}|g' kubernetes/services/order-service.yaml
+                        sed -i 's|kastrov/payment-service:.*|kastrov/payment-service:${BUILD_NUMBER}|g' kubernetes/services/payment-service.yaml
+                        sed -i 's|kastrov/ecommerce-frontend:.*|kastrov/ecommerce-frontend:${BUILD_NUMBER}|g' kubernetes/services/frontend.yaml
+                    """
+                }
+            }
+        }
+        
+        stage('Commit & Push Manifest Changes') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'github-credentials', usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_PASSWORD')]) {
+                    sh """
+                        git config user.email "jenkins@example.com"
+                        git config user.name "Jenkins CI"
+                        git add kubernetes/services/*.yaml
+                        git commit -m "Update image tags to build ${BUILD_NUMBER}" || true
+                        git push https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/kastrov/ecommerce-microservices.git HEAD:main
+                    """
+                }
+            }
+        }
+        
+        stage('Trigger ArgoCD Sync') {
+            steps {
+                // ArgoCD will automatically sync when it detects changes in Git
+                // Or you can manually trigger sync
+                echo "ArgoCD will automatically detect and sync the changes"
+                echo "Manual sync: argocd app sync ecommerce-app"
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo "🎉 CI Pipeline completed! ArgoCD will handle CD."
+        }
+        failure {
+            echo "❌ Pipeline failed!"
+        }
+    }
+}

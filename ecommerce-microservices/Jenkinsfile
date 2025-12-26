@@ -1,0 +1,176 @@
+pipeline {
+    agent any
+    
+    environment {
+        DOCKERHUB_CREDENTIALS = credentials('dockerhub-credentials')
+        DOCKERHUB_USERNAME = 'kastrov'
+        AWS_REGION = 'us-east-1'
+        EKS_CLUSTER_NAME = 'kastro-cluster'
+        NAMESPACE = 'ecommerce'
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                echo "✅ Code checked out successfully"
+            }
+        }
+        
+        stage('Build User Service') {
+            steps {
+                dir('services/user-service') {
+                    script {
+                        docker.build("${DOCKERHUB_USERNAME}/user-service:${BUILD_NUMBER}")
+                        docker.build("${DOCKERHUB_USERNAME}/user-service:latest")
+                    }
+                }
+                echo "✅ User Service built"
+            }
+        }
+        
+        stage('Build Product Service') {
+            steps {
+                dir('services/product-service') {
+                    script {
+                        docker.build("${DOCKERHUB_USERNAME}/product-service:${BUILD_NUMBER}")
+                        docker.build("${DOCKERHUB_USERNAME}/product-service:latest")
+                    }
+                }
+                echo "✅ Product Service built"
+            }
+        }
+        
+        stage('Build Cart Service') {
+            steps {
+                dir('services/cart-service') {
+                    script {
+                        docker.build("${DOCKERHUB_USERNAME}/cart-service:${BUILD_NUMBER}")
+                        docker.build("${DOCKERHUB_USERNAME}/cart-service:latest")
+                    }
+                }
+                echo "✅ Cart Service built"
+            }
+        }
+        
+        stage('Build Order Service') {
+            steps {
+                dir('services/order-service') {
+                    script {
+                        docker.build("${DOCKERHUB_USERNAME}/order-service:${BUILD_NUMBER}")
+                        docker.build("${DOCKERHUB_USERNAME}/order-service:latest")
+                    }
+                }
+                echo "✅ Order Service built"
+            }
+        }
+        
+        stage('Build Payment Service') {
+            steps {
+                dir('services/payment-service') {
+                    script {
+                        docker.build("${DOCKERHUB_USERNAME}/payment-service:${BUILD_NUMBER}")
+                        docker.build("${DOCKERHUB_USERNAME}/payment-service:latest")
+                    }
+                }
+                echo "✅ Payment Service built"
+            }
+        }
+        
+        stage('Build Frontend') {
+            steps {
+                dir('frontend') {
+                    script {
+                        docker.build("${DOCKERHUB_USERNAME}/ecommerce-frontend:${BUILD_NUMBER}")
+                        docker.build("${DOCKERHUB_USERNAME}/ecommerce-frontend:latest")
+                    }
+                }
+                echo "✅ Frontend built"
+            }
+        }
+        
+        stage('Push Images to DockerHub') {
+            steps {
+                script {
+                    docker.withRegistry('https://registry.hub.docker.com', 'dockerhub-credentials') {
+                        // Push all services
+                        docker.image("${DOCKERHUB_USERNAME}/user-service:${BUILD_NUMBER}").push()
+                        docker.image("${DOCKERHUB_USERNAME}/user-service:latest").push()
+                        
+                        docker.image("${DOCKERHUB_USERNAME}/product-service:${BUILD_NUMBER}").push()
+                        docker.image("${DOCKERHUB_USERNAME}/product-service:latest").push()
+                        
+                        docker.image("${DOCKERHUB_USERNAME}/cart-service:${BUILD_NUMBER}").push()
+                        docker.image("${DOCKERHUB_USERNAME}/cart-service:latest").push()
+                        
+                        docker.image("${DOCKERHUB_USERNAME}/order-service:${BUILD_NUMBER}").push()
+                        docker.image("${DOCKERHUB_USERNAME}/order-service:latest").push()
+                        
+                        docker.image("${DOCKERHUB_USERNAME}/payment-service:${BUILD_NUMBER}").push()
+                        docker.image("${DOCKERHUB_USERNAME}/payment-service:latest").push()
+                        
+                        docker.image("${DOCKERHUB_USERNAME}/ecommerce-frontend:${BUILD_NUMBER}").push()
+                        docker.image("${DOCKERHUB_USERNAME}/ecommerce-frontend:latest").push()
+                    }
+                }
+                echo "✅ All images pushed to DockerHub"
+            }
+        }
+        
+        stage('Update Kubeconfig') {
+            steps {
+                withAWS(credentials: 'aws-credentials', region: "${AWS_REGION}") {
+                    sh "aws eks update-kubeconfig --name ${EKS_CLUSTER_NAME} --region ${AWS_REGION}"
+                }
+                echo "✅ Kubeconfig updated"
+            }
+        }
+        
+        stage('Deploy to EKS') {
+            steps {
+                withAWS(credentials: 'aws-credentials', region: "${AWS_REGION}") {
+                    // Apply namespace and secrets
+                    sh "kubectl apply -f kubernetes/namespace.yaml"
+                    sh "kubectl apply -f kubernetes/configmaps/secrets.yaml"
+                    
+                    // Deploy databases
+                    sh "kubectl apply -f kubernetes/databases/"
+                    
+                    // Wait for databases
+                    sh "sleep 30"
+                    
+                    // Deploy services
+                    sh "kubectl apply -f kubernetes/services/"
+                    
+                    // Deploy ingress
+                    sh "kubectl apply -f kubernetes/gateway/ingress.yaml"
+                }
+                echo "✅ Deployed to EKS"
+            }
+        }
+        
+        stage('Verify Deployment') {
+            steps {
+                withAWS(credentials: 'aws-credentials', region: "${AWS_REGION}") {
+                    sh "kubectl get pods -n ${NAMESPACE}"
+                    sh "kubectl get svc -n ${NAMESPACE}"
+                    sh "kubectl get ingress -n ${NAMESPACE}"
+                }
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo "🎉 Pipeline completed successfully!"
+            echo "Check your application at the ALB URL"
+        }
+        failure {
+            echo "❌ Pipeline failed. Check the logs for details."
+        }
+        always {
+            // Clean up Docker images
+            sh "docker system prune -f || true"
+        }
+    }
+}
